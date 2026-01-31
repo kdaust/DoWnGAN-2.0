@@ -165,84 +165,131 @@ class ResidualInResidualDenseBlock(nn.Module):
     def forward(self, x):
         return self.dense_blocks(x).mul(self.res_scale) + x
 
-
-
 class Generator(nn.Module):
-    # coarse_dim_n, fine_dim_n, n_covariates, n_predictands
+    """
+    Grouped-head variant for predictands ordered as: [u, v, T, q]
+
+    - Shared trunk up to `conv3_all`
+    - Two head trunks:
+        * head_uv_shared: shared for u and v
+        * head_Tq_shared: shared for T and q
+    - Separate output conv per variable:
+        * out_u, out_v, out_T, out_q
+    """
+
     def __init__(
         self,
         filters,
         fine_dims,
         channels,
         channels_hr_cov=1,
-        n_predictands=2,
+        n_predictands=4,          # expects 4 here: u,v,T,q
         num_res_blocks=14,
         num_res_blocks_fine=1,
         num_upsample=3,
+        noise_in_heads=True,      # you can set False if heads get too "noisy"
     ):
         super().__init__()
         self.fine_res = fine_dims
         self.n_predictands = n_predictands
-        # First layer
+
+        # First layers
         self.conv1 = nn.Conv2d(channels, filters, kernel_size=3, stride=1, padding=1)
-        self.conv1f = nn.Conv2d(
-            channels_hr_cov, filters, kernel_size=3, stride=1, padding=1
-        )
+        self.conv1f = nn.Conv2d(channels_hr_cov, filters, kernel_size=3, stride=1, padding=1)
+
         # Residual blocks
         self.res_blocks = nn.Sequential(
             *[
-                ResidualInResidualDenseBlock(filters, noise = True, resolution=filters)
+                ResidualInResidualDenseBlock(filters, noise=True, resolution=filters)
                 for _ in range(num_res_blocks)
             ]
         )
         self.res_blocksf = nn.Sequential(
             *[
-                ResidualInResidualDenseBlock(filters, noise = True, resolution=fine_dims)
+                ResidualInResidualDenseBlock(filters, noise=True, resolution=fine_dims)
                 for _ in range(num_res_blocks_fine)
             ]
         )
 
         # Second conv layer post residual blocks
         self.conv2 = nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1)
+
         self.LR_pre = nn.Sequential(
-            self.conv1, ShortcutBlock(nn.Sequential(self.res_blocks, self.conv2))
+            self.conv1,
+            ShortcutBlock(nn.Sequential(self.res_blocks, self.conv2)),
         )
         self.HR_pre = nn.Sequential(
-            self.conv1f, ShortcutBlock(nn.Sequential(self.res_blocksf, self.conv2))
+            self.conv1f,
+            ShortcutBlock(nn.Sequential(self.res_blocksf, self.conv2)),
         )
 
-        # Upsampling layers
+        # Upsampling layers (pixelshuffle)
         upsample_layers = []
         for _ in range(num_upsample):
             upsample_layers += [
                 nn.Conv2d(filters, filters * 4, kernel_size=3, stride=1, padding=1),
-                nn.LeakyReLU(),
+                nn.LeakyReLU(0.2, inplace=True),
                 nn.PixelShuffle(upscale_factor=2),
             ]
         self.upsampling = nn.Sequential(*upsample_layers)
-        # Final output block
+
+        # Joint fusion at HR
         self.conv3_all = nn.Sequential(
             nn.Conv2d(filters * 2, filters * 2, kernel_size=3, stride=1, padding=1),
-            ResidualInResidualDenseBlock(filters * 2, noise = True, resolution=fine_dims),
+            ResidualInResidualDenseBlock(filters * 2, noise=True, resolution=fine_dims),
         )
 
-        self.conv3_sep = nn.Sequential(
+        # --- Grouped heads ---
+        # Shared trunk for u/v
+        self.head_uv_shared = nn.Sequential(
             nn.Conv2d(filters * 2, filters, kernel_size=3, stride=1, padding=1),
-            ResidualInResidualDenseBlock(filters, noise = True, resolution=fine_dims),
+            ResidualInResidualDenseBlock(filters, noise=noise_in_heads, resolution=fine_dims),
             nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
-            ResidualInResidualDenseBlock(filters, noise = False, resolution=fine_dims),
-            nn.LeakyReLU(),
-            nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
+            nn.LeakyReLU(0.2, inplace=True),
         )
+        self.out_u = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
+        self.out_v = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
+
+        # Shared trunk for T/q
+        self.head_Tq_shared = nn.Sequential(
+            nn.Conv2d(filters * 2, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
+            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.out_T = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
+        self.out_q = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
+        # precip
+        self.head_precip = nn.Sequential(
+            nn.Conv2d(filters * 2, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=noise_in_heads, resolution=fine_dims),
+            ResidualInResidualDenseBlock(filters, noise=noise_in_heads, resolution=fine_dims),
+            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.out_P = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x_coarse, x_fine):
+        # Shared trunk
         out = self.LR_pre(x_coarse)
-        outc = self.upsampling(out)
-        outf = self.HR_pre(x_fine)
-        out = torch.cat((outc,outf),1)
-        out = self.conv3_all(out)
-        out_ls = []
-        for i in range(self.n_predictands):
-            out_ls.append(self.conv3_sep(out))
-        res = torch.cat(out_ls, dim = 1)
-        return res
+        outc = self.upsampling(out)     # HR features from LR covariates
+        outf = self.HR_pre(x_fine)      # HR covariate branch (must be same spatial res as outc)
+        feat = self.conv3_all(torch.cat((outc, outf), dim=1))   # (B, 2*filters, H, W)
+
+        # Group heads
+        feat_uv = self.head_uv_shared(feat)
+        u = self.out_u(feat_uv)
+        v = self.out_v(feat_uv)
+
+        feat_Tq = self.head_Tq_shared(feat)
+        T = self.out_T(feat_Tq)
+        q = self.out_q(feat_Tq)
+
+        feat_P = self.head_precip(feat)
+        P = self.out_P(feat_P)
+
+        # Output order: [u, v, T, q]
+        return torch.cat([u, v, T, q,P], dim=1)

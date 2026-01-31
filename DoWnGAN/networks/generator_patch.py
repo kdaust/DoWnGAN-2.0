@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
 Adaption of Nic's generator based on ESRGAN+ model
 """
@@ -50,7 +53,7 @@ class DenseResidualBlockNoise(nn.Module):
         self.b4 = block(in_features=4 * filters + 4)
         self.b5 = block(in_features=5 * filters + 5, non_linearity=False)
         #self.blocks = [self.b1, self.b2, self.b3, self.b4, self.b5]
-        self.noise_strength = torch.nn.Parameter(torch.mul(torch.ones([]), 10))
+        self.noise_strength = torch.nn.Parameter(torch.mul(torch.ones([]), 0.5))
 
     def forward(self, x):
         nrm_mean = torch.zeros([x.shape[0], 1, self.resolution, self.resolution], device = x.device)
@@ -190,7 +193,6 @@ class Generator(nn.Module):
         noise_in_heads=True,      # you can set False if heads get too "noisy"
     ):
         super().__init__()
-        assert n_predictands == 4, "This grouped-head variant assumes 4 predictands: [u, v, T, q]"
         self.fine_res = fine_dims
         self.n_predictands = n_predictands
 
@@ -255,13 +257,24 @@ class Generator(nn.Module):
         # Shared trunk for T/q
         self.head_Tq_shared = nn.Sequential(
             nn.Conv2d(filters * 2, filters, kernel_size=3, stride=1, padding=1),
-            ResidualInResidualDenseBlock(filters, noise=noise_in_heads, resolution=fine_dims),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
             nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
             ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
             nn.LeakyReLU(0.2, inplace=True),
         )
         self.out_T = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
         self.out_q = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
+
+                # Precip head
+        self.head_precip = nn.Sequential(
+            nn.Conv2d(filters * 2, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=True, resolution=fine_dims),
+            ResidualInResidualDenseBlock(filters, noise=True, resolution=fine_dims),
+            nn.Conv2d(filters, filters, kernel_size=3, stride=1, padding=1),
+            ResidualInResidualDenseBlock(filters, noise=False, resolution=fine_dims),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.out_P = nn.Conv2d(filters, 1, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x_coarse, x_fine):
         # Shared trunk
@@ -279,5 +292,6 @@ class Generator(nn.Module):
         T = self.out_T(feat_Tq)
         q = self.out_q(feat_Tq)
 
-        # Output order: [u, v, T, q]
-        return torch.cat([u, v, T, q], dim=1)
+        feat_P = self.head_precip(feat)
+        P = self.out_P(feat_P)
+        return torch.cat([u, v, T, q, P], dim=1)

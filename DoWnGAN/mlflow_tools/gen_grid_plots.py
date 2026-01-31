@@ -23,18 +23,18 @@ def gen_grid_images(G, coarse, invariant, real, epoch, train_test):
     coarse = torchvision.utils.make_grid(
         coarse[random, ...],
         nrow=5
-    )[2, ...]
+    )[4, ...]
 
     fake = torchvision.utils.make_grid(
         fake,
         nrow=5
-    )[0, ...]
+    )[3, ...]
 
 
     real = torchvision.utils.make_grid(
         real[random, ...],
         nrow=5
-    )[0, ...]
+    )[3, ...]
 
 
     fig = plt.figure(figsize=(20, 15))
@@ -59,7 +59,7 @@ def gen_grid_images(G, coarse, invariant, real, epoch, train_test):
     ax.imshow(real.cpu().detach(), origin="lower")
 
 
-    if epoch % 10 == 0:
+    if epoch % 5 == 0:
         plt.savefig(f"{mlflow.get_artifact_uri()}/{train_test}_{epoch}.png")
     plt.savefig(f"{mlflow.get_artifact_uri()}/{train_test}.png")
     plt.close(fig)

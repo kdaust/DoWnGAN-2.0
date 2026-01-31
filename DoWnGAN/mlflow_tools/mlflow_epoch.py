@@ -16,6 +16,57 @@ from csv import DictWriter
 
 mlflow.set_tracking_uri(config.EXPERIMENT_PATH)
 
+def compute_critic_gaps(
+    s_joint_real, s_joint_fake,
+    s_vars_real, s_vars_fake,
+    s_global_real=None, s_global_fake=None,
+    var_names=None
+):
+    """
+    Compute Wasserstein-style gaps for each critic head.
+    
+    Args:
+        s_joint_real: (B, 1, H, W)
+        s_joint_fake: (B, 1, H, W)
+        s_vars_real: list of (B, 1, H, W)
+        s_vars_fake: list of (B, 1, H, W)
+        s_global_real: (B,) or (B,1,1)
+        s_global_fake: (B,) or (B,1,1)
+        var_names: list of variable names, e.g. ["u","v","T","q","P"]
+    
+    Returns:
+        dict with:
+            - "joint_gap": float
+            - "var_gaps": {name: gap, ...}
+            - "global_gap": float or None
+    """
+    
+    # ---- Joint head gap ----
+    joint_real = s_joint_real.mean().item()
+    joint_fake = s_joint_fake.mean().item()
+    joint_gap  = joint_real - joint_fake
+    
+    # ---- Variable head gaps ----
+    if var_names is None:
+        var_names = [f"var{i}" for i in range(len(s_vars_real))]
+    
+    var_gaps = {}
+    for name, r, f in zip(var_names, s_vars_real, s_vars_fake):
+        var_gaps[name] = (r.mean() - f.mean()).item()
+    
+    # ---- Global head gap ----
+    if s_global_real is not None and s_global_fake is not None:
+        global_gap = (s_global_real.mean() - s_global_fake.mean()).item()
+    else:
+        global_gap = None
+    
+    return {
+        "joint_gap": joint_gap,
+        "var_gaps": var_gaps,
+        "global_gap": global_gap,
+    }
+
+
 def log_to_file(dict, train_test):
     """Writes the metrics to a csv file"""
     csv_path = f"{mlflow.get_artifact_uri()}/{train_test}_metrics.csv"
@@ -25,6 +76,33 @@ def log_to_file(dict, train_test):
         df = pd.DataFrame.from_dict(data=dict)
         df.to_csv(f, header=(f.tell()==0))
     # mlflow.log_artifact(csv_path)
+
+class CriticGapCSVLogger:
+    def __init__(self, var_names):
+        self.filepath = f"{mlflow.get_artifact_uri()}/critic_gap_metrics.csv"
+        self.var_names = var_names
+        
+        # Create file + header if it doesn't exist
+        if not os.path.exists(self.filepath):
+            with open(self.filepath, "w", newline="") as f:
+                writer = csv.writer(f)
+                header = (
+                    ["step", "joint_gap", "global_gap"] + 
+                    [f"gap_{v}" for v in var_names]
+                )
+                writer.writerow(header)
+
+    def log(self, step, gap_dict):
+        row = [
+            step,
+            gap_dict["joint_gap"],
+            gap_dict["global_gap"],
+        ] + [gap_dict["var_gaps"][v] for v in self.var_names]
+
+        with open(self.filepath, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(row)
+
 
 
 def initialize_metric_dicts(d, num_preds):

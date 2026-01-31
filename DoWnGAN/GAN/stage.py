@@ -51,9 +51,9 @@ coarse_train, fine_train, coarse_test, fine_test, invariant = load_preprocessed(
 print("Loading region into memory...")
 if(not toydata):
     coarse_train = torch.from_numpy(coarse_train.to_array().to_numpy()).transpose(0, 1).float()
-    fine_train = torch.from_numpy(fine_train.to_array().to_numpy()).transpose(0, 1).float()[:,(0,1,3,4),...]
+    fine_train = torch.from_numpy(fine_train.to_array().to_numpy()).transpose(0, 1).float()[:,(0,1,3,4,2),...]
     coarse_test = torch.from_numpy(coarse_test.to_array().to_numpy()).transpose(0, 1).float()
-    fine_test = torch.from_numpy(fine_test.to_array().to_numpy()).transpose(0, 1).float()[:,(0,1,3,4),...]
+    fine_test = torch.from_numpy(fine_test.to_array().to_numpy()).transpose(0, 1).float()[:,(0,1,3,4,2),...] 
     invariant = invariant.unsqueeze(0).to(config.device)
 
 class StageData:
@@ -79,8 +79,8 @@ class StageData:
         self.generator = torch.jit.script(Generator(self.coarse_dim_n, self.fine_dim_n, self.n_covariates, self.n_invariant, self.n_predictands).to(config.device))
 
         # Define optimizers
-        self.G_optimizer = torch.optim.Adam(self.generator.parameters(), hp.lr, betas=(0.9, 0.99))
-        self.C_optimizer = torch.optim.Adam(self.critic.parameters(), hp.lr, betas=(0.9, 0.99))
+        self.G_optimizer = torch.optim.Adam(self.generator.parameters(), hp.lr, betas=(0.5, 0.99))
+        self.C_optimizer = torch.optim.Adam(self.critic.parameters(), hp.lr, betas=(0.0, 0.99))
 
         # Set up the run
         # Define the mlflow experiment drectories

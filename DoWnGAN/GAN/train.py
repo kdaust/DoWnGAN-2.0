@@ -4,6 +4,7 @@ import DoWnGAN.config.hyperparams as hp
 from DoWnGAN.config import config
 from DoWnGAN.GAN.wasserstein_patch import WassersteinGAN
 from DoWnGAN.mlflow_tools.mlflow_utils import log_hyperparams
+from DoWnGAN.mlflow_tools.mlflow_epoch import CriticGapCSVLogger
 
 import mlflow
 import torch
@@ -27,6 +28,10 @@ def train():
     with mlflow.start_run(experiment_id = s.exp_id, run_name = s.tag) as run:
         # mlflow.set_tag(run.info.run_id, s.tag)
         log_hyperparams()
+        var_names = ["u", "v", "T", "q", "P"]
+        critic_logger = CriticGapCSVLogger(var_names)
+        trainer.set_critic_gap_logger(critic_logger)
+
         trainer.train(
             s.dataloader, 
             s.testdataloader,

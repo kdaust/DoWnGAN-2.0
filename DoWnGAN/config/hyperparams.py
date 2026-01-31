@@ -16,19 +16,21 @@ import os
 # Hyper params
 gp_lambda = 10
 critic_iterations = 5
-batch_size = 8
+batch_size = 6
 gamma = 0.01
-content_lambda = 600
+content_lambda = 400
+drift_epsilon = 1e-4
 #variance_lambda = 8
 ncomp = 75
 lr = 0.00025
 
-lambdas = { # weights for multi-head critic 
+lambdas = {
     "joint": 1.0,
-    "vars":  [0.25, 0.25, 0.25, 0.25],  # u,v,T,q
-    "global": 0.1,                       # or 0.0 initially if you want
+    "vars":  [0.20, 0.20, 0.20, 0.20, 0.20],  # u,v,T,q,p
+    "global": 0.1,
 }
 
+#crps_weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 2.0], device=torch.device("cuda:0"))
 # Run configuration parameters
 epochs = 251
 print_every = 10

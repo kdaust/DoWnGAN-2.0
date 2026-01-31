@@ -3,7 +3,7 @@ import DoWnGAN.config.hyperparams as hp
 from DoWnGAN.config import config
 from DoWnGAN.GAN.losses import content_loss, crps_empirical
 from DoWnGAN.mlflow_tools.gen_grid_plots import gen_grid_images
-from DoWnGAN.mlflow_tools.mlflow_epoch import post_epoch_metric_mean, gen_batch_and_log_metrics, initialize_metric_dicts, log_network_models
+from DoWnGAN.mlflow_tools.mlflow_epoch import post_epoch_metric_mean, gen_batch_and_log_metrics, initialize_metric_dicts, log_network_models, CriticGapCSVLogger, compute_critic_gaps
 import torch
 from torch.autograd import grad as torch_grad
 
@@ -12,6 +12,7 @@ highres_in = True
 freq_sep = False
 torch.autograd.set_detect_anomaly(True)
 n_realisation = 4 ##stochastic sampling
+
 
 class WassersteinGAN:
     """Implements Wasserstein PatchGAN with gradient penalty and 
@@ -23,6 +24,10 @@ class WassersteinGAN:
         self.G_optimizer = G_optimizer
         self.C_optimizer = C_optimizer
         self.num_steps = 0
+        self.critic_logger = None
+
+    def set_critic_gap_logger(self, logger):
+        self.critic_logger = logger
         
     def critic_score(self, s_joint, s_vars, s_global):
         """
@@ -44,7 +49,7 @@ class WassersteinGAN:
 
         return D
     
-    def _critic_train_iteration(self, coarse, fine, invariant):
+    def _critic_train_iteration(self, coarse, fine, invariant, iteration):
         """
         coarse: LR covariates (your cov_lr)
         fine:   HR target vars (x_hr_vars)
@@ -60,9 +65,19 @@ class WassersteinGAN:
 
         D_real = self.critic_score(s_joint_real, s_vars_real, s_global_real)
         D_fake = self.critic_score(s_joint_fake, s_vars_fake, s_global_fake)
-
+        drift = (D_real ** 2).mean() * hp.drift_epsilon ##prevent adversarial loss from getting too big
         gp = hp.gp_lambda * self._gp(fine, fake, invariant, coarse)
-        critic_loss = (D_fake.mean() - D_real.mean()) + gp
+
+        if iteration % 500 == 0:
+            gaps = compute_critic_gaps(
+                s_joint_real, s_joint_fake,
+                s_vars_real, s_vars_fake,
+                s_global_real, s_global_fake,
+                var_names=["u","v","T","q","P"]
+            )
+            self.critic_logger.log(self.num_steps, gaps)
+            
+        critic_loss = (D_fake.mean() - D_real.mean()) + gp + drift
 
         critic_loss.backward()
         self.C_optimizer.step()
@@ -100,9 +115,8 @@ class WassersteinGAN:
             crps = torch.cat(crps_ls)
             crps_term = crps.mean()
 
-        if iteration % 100 == 0:
-            print(f"Adversarial loss: {float(-D_fake.mean())}")
-            print(f"CRPS Loss: {float(hp.content_lambda * crps_term)}")
+        if iteration % 500 == 0:
+            print(f"Adversarial loss: {float(-D_fake.mean())}; CRPS Loss: {float(hp.content_lambda * crps_term)}")
         g_loss = -D_fake.mean() + crps_term * hp.content_lambda
 
         g_loss.backward()
@@ -137,6 +151,14 @@ class WassersteinGAN:
 
         return gp
 
+    def log_noise_strengths(self, step):
+        strengths = []
+        for m in self.G.modules():
+            if hasattr(m, "noise_strength"):
+                strengths.append(float(m.noise_strength.detach().cpu()))
+        if strengths:
+            print(f"[Step {step}] noise_strength mean={sum(strengths)/len(strengths):.4f}, "
+                f"min={min(strengths):.4f}, max={max(strengths):.4f}")
 
     def _train_epoch(self, dataloader, testdataloader, epoch):
         """
@@ -147,18 +169,18 @@ class WassersteinGAN:
         """
         print(80*"=")
         ##print("Wasserstein GAN")
-        train_metrics = initialize_metric_dicts({},4)
-        test_metrics = initialize_metric_dicts({},4)
+        train_metrics = initialize_metric_dicts({},5)
+        test_metrics = initialize_metric_dicts({},5)
 
         for i,data in enumerate(dataloader):
             coarse = data[0].to(config.device)
             fine = data[1].to(config.device)
             invariant = data[2].to(config.device)
-            
-            self._critic_train_iteration(coarse, fine, invariant)
+
+            self._critic_train_iteration(coarse, fine, invariant, self.num_steps)
 
             if self.num_steps%hp.critic_iterations == 0:
-                self._generator_train_iteration(coarse, fine, invariant, i)
+                self._generator_train_iteration(coarse, fine, invariant, self.num_steps)
 
             # Track train set metrics
             train_metrics = gen_batch_and_log_metrics(
